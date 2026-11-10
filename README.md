@@ -78,7 +78,7 @@ the AI service when it has to, and every route ends with your review before subm
 
 AutoApply supports three AI services:
 
-- **Google Gemini** — direct integration using Gemini 2.5 Flash
+- **Google Gemini** — direct integration using Gemini 3.8 Flash
 - **OpenRouter** — set `OPENROUTER_MODEL` to any model available to your OpenRouter account
 - **OpenCode Go** — an OpenAI-compatible subscription gateway that serves many open models (DeepSeek, Kimi, GLM, Qwen, MiniMax …) behind one key; set `AI_PROVIDER=opencode`, `OPENCODE_API_KEY` and `OPENCODE_MODEL` (for example `deepseek-v4.1-flash`). Run `curl -H "Authorization: Bearer $OPENCODE_API_KEY" https://opencode.ai/zen/go/v1/models` to list the ids your subscription can use.
 

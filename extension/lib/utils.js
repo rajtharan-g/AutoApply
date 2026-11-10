@@ -120,7 +120,7 @@ const AutoApplyUtils = (() => {
     const url = `${base}${endpoint}`;
     const options = {
       method,
-      signal: AbortSignal.timeout(30000)
+      signal: AbortSignal.timeout(['/api/autofill', '/api/analyze-job', '/api/cover-letter', '/api/cover-letter/docx', '/api/profile/upload-resume'].includes(endpoint) ? 180000 : 30000)
     };
     if (method !== 'GET') {
       options.headers = { 'Content-Type': 'application/json' };

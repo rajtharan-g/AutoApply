@@ -99,7 +99,7 @@ class RateLimiter:
 _PROVIDER_SETTINGS = {
     "gemini": {
         "api_key_env": "GEMINI_API_KEY",
-        "default_model": "gemini-2.5-flash",
+        "default_model": "gemini-3.8-flash",
         "model_env": None,
     },
     "openrouter": {
@@ -127,6 +127,10 @@ _PROVIDER_DISPLAY_NAMES = {
 
 def provider_display_name(provider: str) -> str:
     """Return the name of an AI service as the user sees it."""
+    if provider == "opencode":
+        base_url = os.getenv("OPENCODE_BASE_URL", "").strip().lower()
+        if base_url.startswith(("http://127.0.0.1:11434", "http://localhost:11434")):
+            return "Local Ollama"
     return _PROVIDER_DISPLAY_NAMES.get(provider, "the AI service")
 
 

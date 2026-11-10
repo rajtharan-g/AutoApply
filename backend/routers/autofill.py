@@ -4,6 +4,9 @@ import hashlib
 import json
 import logging
 import threading
+import base64
+import io
+import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -148,6 +151,9 @@ def autofill(form_schema: FormSchema):
         instruction = by_field.get(field.id)
         if instruction is None:
             continue
+        field_label = f"{field.label or ''} {field.name or ''} {field.placeholder or ''}"
+        if (field.type or '').lower() in {'file', 'upload'} and re.search(r"cover[ _-]?letter|letter of interest", field_label, re.I):
+            instruction = instruction.model_copy(update={"action": "upload", "value": "cover_letter", "source": "tailored cover letter"})
         source = (instruction.source or "").casefold()
         review_required = (
             instruction.action == "skip"
@@ -278,6 +284,46 @@ def generate_cover_letter(body: CoverLetterRequest):
         job_description, company, role, profile, knowledge
     )
     return {"cover_letter": letter}
+
+
+@router.post("/cover-letter/docx")
+def generate_cover_letter_docx(body: CoverLetterRequest):
+    """Generate a tailored cover letter as a downloadable DOCX payload."""
+    profile = _load_profile()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Add your resume in AutoApply before preparing an application.")
+    knowledge = _load_knowledge()
+    from backend.services.cover_letter import CoverLetterGenerator
+    from docx import Document
+    from docx.shared import Inches, Pt
+
+    letter = CoverLetterGenerator.generate(body.job_description, body.company, body.role, profile, knowledge)
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Inches(0.8)
+    section.bottom_margin = Inches(0.8)
+    section.left_margin = Inches(0.9)
+    section.right_margin = Inches(0.9)
+    document.styles["Normal"].font.name = "Aptos"
+    document.styles["Normal"].font.size = Pt(11)
+    name = " ".join(filter(None, (profile.personal.first_name, profile.personal.last_name)))
+    if name:
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(name)
+        run.bold = True
+        run.font.size = Pt(15)
+    contact = " | ".join(filter(None, (profile.personal.email, profile.personal.phone)))
+    if contact:
+        document.add_paragraph(contact)
+    document.add_paragraph()
+    for paragraph in re.split(r"\n\s*\n", letter.strip()):
+        if paragraph.strip():
+            document.add_paragraph(paragraph.strip())
+    stream = io.BytesIO()
+    document.save(stream)
+    safe_company = re.sub(r"[^A-Za-z0-9]+", "_", body.company).strip("_")[:60] or "Company"
+    safe_role = re.sub(r"[^A-Za-z0-9]+", "_", body.role).strip("_")[:60] or "Role"
+    return {"filename": f"Cover_Letter_{safe_company}_{safe_role}.docx", "content_base64": base64.b64encode(stream.getvalue()).decode("ascii")}
 
 
 @router.post("/tailor-resume")

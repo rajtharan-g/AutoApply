@@ -69,7 +69,7 @@
   const FRAME_FILL_TIMEOUT_MS = 8000; // Deadline for an embedded frame's fill reply.
   const CHIP_MOUNT_DEBOUNCE_MS = 300; // Page mutations are batched before the mount gate is re-read.
   const CHIP_MOUNT_RETRY_MS = 15000; // Bounded window for a client-rendered form to appear.
-  const FIT_ANALYSIS_TIMEOUT_MS = 20000; // A pending match score becomes a retry control.
+  const FIT_ANALYSIS_TIMEOUT_MS = 180000; // Allow the local model up to the API request deadline.
   let fieldFailures = new Map();
   // Cross-frame state. See the frame protocol on the responder and askChildFrames().
   const FRAME_TOKEN = UTILS.generateId('frame'); // One nonce per page session (see registerChildResponder).
@@ -770,9 +770,28 @@
     return bytes;
   }
 
-  async function attachSelectedResume(el) {
+  async function attachSelectedResume(el, instruction = {}) {
     if (el.type !== 'file') {
       return { ok: false, reason: 'This field does not take a file.' };
+    }
+    if (instruction.value === 'cover_letter') {
+      try {
+        const result = await UTILS.apiCall('/api/cover-letter/docx', 'POST', {
+          job_description: jdText, company: companyName, role: roleName
+        });
+        const file = new File([base64ToBytes(result.content_base64)], result.filename || 'Cover_Letter.docx', {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        });
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        el.files = transfer.files;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true };
+      } catch (error) {
+        FILLER.highlightUploadField?.(el);
+        return { ok: false, reason: `Could not prepare the tailored cover letter DOCX. ${plainPhrase(error?.message || '')}` };
+      }
     }
     if (!workspace.selectedResumeVersionId) {
       FILLER.highlightUploadField?.(el);
@@ -965,6 +984,7 @@
     overlayContainer.tabIndex = -1;
     applyOverlayTheme();
     shadowRoot.appendChild(overlayContainer);
+    document.addEventListener('wheel', routeOverlayWheel, { capture: true, passive: false });
     previousFocus = document.activeElement;
     overlayContainer.focus({ preventScroll: true });
     document.addEventListener('keydown', handleOverlayKeydown, true);
@@ -1267,6 +1287,7 @@
       dragUpHandler = null;
     }
     document.removeEventListener('keydown', handleOverlayKeydown, true);
+    document.removeEventListener('wheel', routeOverlayWheel, true);
     const focusWasInside = Boolean(shadowHost) && document.activeElement === shadowHost;
     if (shadowHost) {
       shadowHost.remove();
@@ -1292,6 +1313,20 @@
     FILLER.clearUploadHighlight();
     window.__autoapply_active = false;
     setTimeout(ensureReadyChip, 350);
+  }
+
+  /** Keep wheel input over the review panel inside its review list, including
+   * on pages whose own wheel handlers would otherwise scroll the page. */
+  function routeOverlayWheel(event) {
+    if (!shadowHost || !event.composedPath().includes(shadowHost)) return;
+    const scrollContent = shadowRoot?.querySelector('.autoapply-scroll-content');
+    if (!scrollContent || scrollContent.scrollHeight <= scrollContent.clientHeight) return;
+    const pageX = window.scrollX;
+    const pageY = window.scrollY;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    scrollContent.scrollTop += event.deltaY;
+    if (window.scrollX !== pageX || window.scrollY !== pageY) window.scrollTo(pageX, pageY);
   }
 
   /** Close the panel because the user asked for it; suppresses the chip on this URL. */
@@ -1398,13 +1433,15 @@
         <h2>${UTILS.escapeHTML(companyName || 'Company')} · ${UTILS.escapeHTML(roleName || 'Role')}</h2>
         <div class="autoapply-prep-summary"><span>${UTILS.escapeHTML(String(preparationSummary.ready_count))} ready</span><span>${UTILS.escapeHTML(String(preparationSummary.review_count))} to review</span><span>${UTILS.escapeHTML(String(preparationSummary.skipped_count))} skipped</span></div>
       </div>
-      ${renderDuplicateWarning(cachedDuplicateRes)}
-      ${renderAiWarning()}
-      ${renderFrameNote()}
-      ${renderWorkspaceContext()}
-      ${renderFitScoreSection()}
-      <div class="autoapply-fields">
-        ${renderFieldGroups()}
+      <div class="autoapply-scroll-content">
+        ${renderDuplicateWarning(cachedDuplicateRes)}
+        ${renderAiWarning()}
+        ${renderFrameNote()}
+        ${renderWorkspaceContext()}
+        ${renderFitScoreSection()}
+        <div class="autoapply-fields">
+          ${renderFieldGroups()}
+        </div>
       </div>
       <div class="autoapply-footer">
         <button class="autoapply-btn autoapply-btn-primary autoapply-primary-action-btn" ${hasFilledCurrentPage && pageState.isLast && !confirmation ? 'disabled' : ''}>${primaryLabel}</button>
@@ -1472,6 +1509,11 @@
       btn.addEventListener('click', async (e) => {
         const idx = parseInt(e.currentTarget.getAttribute('data-idx'), 10);
         await generateCoverLetter(idx, e.currentTarget);
+      });
+    });
+    overlayContainer.querySelectorAll('.autoapply-download-cover-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        await downloadCoverLetterDocx(parseInt(e.currentTarget.getAttribute('data-idx'), 10), e.currentTarget);
       });
     });
 
@@ -1558,20 +1600,15 @@
       (isPolicySkip(instruction) ? collapsed : skipped).push(entry);
     });
     const groups = [
-      ['review', 'Needs review', 'Check these before filling', review, true],
-      ['ready', 'Ready to fill', 'Verified profile facts and approved answers', ready, false],
-      ['skipped', 'Skipped', 'Left untouched because the information is missing', skipped, false],
+      ['review', 'Needs review', 'Check these before filling', review],
+      ['ready', 'Ready to fill', 'Verified profile facts and approved answers', ready],
+      ['skipped', 'Skipped', 'Left untouched because the information is missing', skipped],
     ].filter(([, , , items]) => items.length)
-      .map(([kind, title, copy, items, open]) => `<details class="autoapply-field-group autoapply-field-group-${kind}" ${open ? 'open' : ''}><summary><span><strong>${title}</strong><small>${copy}</small></span><b>${items.length}</b></summary><div>${items.map((entry) => renderFieldRow(entry.field, entry.idx)).join('')}</div></details>`);
+      .map(([kind, title, copy, items]) => `<section class="autoapply-field-group autoapply-field-group-${kind}"><div class="autoapply-field-group-heading"><span><strong>${title}</strong><small>${copy}</small></span><b>${items.length}</b></div>${items.map((entry) => renderFieldRow(entry.field, entry.idx)).join('')}</section>`);
     if (collapsed.length) {
       // One summary row instead of a wall of demographic fields: the reasons are
       // still here, one expansion away.
-      groups.push(`
-        <details class="autoapply-field-group autoapply-field-group-collapsed">
-          <summary><span><strong>${collapsed.length} field${collapsed.length === 1 ? '' : 's'} left for you</strong><small>Sensitive or covered by your fill rules — open for each reason</small></span><b>${collapsed.length}</b></summary>
-          <div>${collapsed.map((entry) => renderFieldRow(entry.field, entry.idx)).join('')}</div>
-        </details>
-      `);
+      groups.push(`<section class="autoapply-field-group autoapply-field-group-collapsed"><div class="autoapply-field-group-heading"><span><strong>${collapsed.length} field${collapsed.length === 1 ? '' : 's'} left for you</strong><small>Sensitive or covered by your fill rules</small></span><b>${collapsed.length}</b></div>${collapsed.map((entry) => renderFieldRow(entry.field, entry.idx)).join('')}</section>`);
     }
     return groups.join('') || '<div class="autoapply-empty-fields">No fillable fields were found on this page.</div>';
   }
@@ -1803,15 +1840,16 @@
     const toggleHtml = isExpandable ? `<button class="autoapply-expand-toggle" data-idx="${idx}" aria-expanded="false" aria-controls="val_${idx}">▼ more</button>` : '';
 
     const labelLower = (field.label || field.placeholder || field.name || '').toLowerCase();
-    const isCoverLetter = (field.type === 'textarea' || field.type === 'text') && (
+    const isCoverLetter = /^(textarea|text|file|upload)$/i.test(field.type || '') && (
       labelLower.includes('cover letter') || labelLower.includes('cover_letter') 
       || labelLower.includes('coverletter') || labelLower.includes('letter of interest')
     );
 
     const coverLetterBtnHtml = isCoverLetter ? `
       <div style="margin-top: 6px;">
-        <button class="autoapply-btn autoapply-gen-cover-btn" data-idx="${idx}" style="font-size: 11px; padding: 4px 8px; width: auto; height: auto; cursor: pointer;">
-          ✍ Generate Cover Letter
+        ${/^(file|upload)$/i.test(field.type || '') ? '' : `<button class="autoapply-btn autoapply-gen-cover-btn" data-idx="${idx}" style="font-size: 11px; padding: 4px 8px; width: auto; height: auto; cursor: pointer;">✍ Generate Cover Letter</button>`}
+        <button class="autoapply-btn autoapply-download-cover-btn" data-idx="${idx}" style="font-size: 11px; padding: 4px 8px; width: auto; height: auto; cursor: pointer;">
+          ${/^(file|upload)$/i.test(field.type || '') ? 'Generate & download DOCX' : 'Download DOCX'}
         </button>
       </div>
     ` : '';
@@ -2340,6 +2378,34 @@
       btn.textContent = originalText;
       btn.disabled = false;
       showStatus(`AutoApply could not write the cover letter. ${plainFailureReason(err?.detail)}`, true);
+    }
+  }
+
+  async function downloadCoverLetterDocx(idx, btn) {
+    const originalText = btn.textContent;
+    btn.textContent = 'Creating DOCX...';
+    btn.disabled = true;
+    try {
+      const result = await UTILS.apiCall('/api/cover-letter/docx', 'POST', {
+        job_description: jdText, company: companyName, role: roleName
+      });
+      const raw = atob(result.content_base64);
+      const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = result.filename || 'Cover_Letter.docx';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showStatus('Tailored cover letter downloaded as a DOCX. Review it before uploading.', false);
+    } catch (err) {
+      showStatus(`AutoApply could not create the DOCX. ${plainFailureReason(err?.detail)}`, true);
+    } finally {
+      btn.textContent = originalText;
+      btn.disabled = false;
     }
   }
 

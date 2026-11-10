@@ -32,6 +32,8 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # One attempt must finish inside the caller's own timeout budget.
 REQUEST_TIMEOUT_SECONDS = 30.0
+# Small local models can take longer than cloud APIs to structure a full resume.
+LOCAL_MODEL_TIMEOUT_SECONDS = 180.0
 
 # Retry only on rate limiting and transient server errors.
 _RETRYABLE_STATUSES = frozenset({429})
@@ -105,12 +107,16 @@ class OpenRouterClient(LLMClient):
             or (os.getenv(self.base_url_env) if self.base_url_env else None)
             or self.api_url
         ).strip()
+        is_local_endpoint = self._endpoint.startswith(
+            ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+        )
         self._privacy_mode = (
             os.getenv("OPENROUTER_PRIVACY_MODE", "strict").strip().lower()
             if self.privacy_mode_supported
             else "allow"
         )
-        self._http = httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+        timeout = LOCAL_MODEL_TIMEOUT_SECONDS if is_local_endpoint else REQUEST_TIMEOUT_SECONDS
+        self._http = httpx.Client(timeout=timeout)
         logger.info(f"{self.label} client initialized with model: {self._model}")
 
     # -- LLMClient interface --------------------------------------------------

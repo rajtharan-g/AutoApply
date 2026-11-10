@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 _backend_dir = Path(__file__).parent.parent
 load_dotenv(_backend_dir / ".env")
 
-# Retry only on transient conditions; a 4xx rejection will not heal with a retry.
-_RETRYABLE_STATUSES = frozenset({408, 409, 429})
+# Retry transient client throttling and server availability errors; other 4xx
+# rejections will not heal with a retry.
+_RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 # One attempt must finish inside the caller's own timeout budget.
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -51,13 +52,16 @@ def _http_status(error: Exception) -> Optional[int]:
 class GeminiClient(LLMClient):
     """Google Gemini API client with retry logic, implementing the LLMClient interface."""
 
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-flash"):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-3.8-flash"):
+        key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")
+        self.api_key = key.strip()
         if not self.api_key:
             raise ValueError(
                 "GEMINI_API_KEY not found. Set it in backend/.env or pass it directly."
             )
-        genai.configure(api_key=self.api_key)
+        # REST avoids the gRPC DNS resolver, which can fail on macOS even when
+        # the system resolver can resolve Google's hostname successfully.
+        genai.configure(api_key=self.api_key, transport="rest")
         self._model_name = model_name
         self.model = genai.GenerativeModel(model_name)
         logger.info(f"Gemini client initialized with model: {model_name}")
@@ -120,7 +124,10 @@ class GeminiClient(LLMClient):
                 response = model.generate_content(
                     prompt,
                     generation_config=generation_config,
-                    request_options={"timeout": REQUEST_TIMEOUT_SECONDS},
+                    # Let this client's retry loop own retries and deadlines;
+                    # the SDK's default retry policy can otherwise wait up to
+                    # ten minutes even after a DNS failure.
+                    request_options={"timeout": REQUEST_TIMEOUT_SECONDS, "retry": None},
                 )
                 if not response.candidates:
                     raise ValueError("Gemini returned no candidates (possibly blocked by safety filters)")

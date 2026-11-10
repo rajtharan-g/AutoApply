@@ -303,8 +303,12 @@ function setupKeyLabel(choice) {
 function setupStepCopy(status, step, done) {
     if (!status) return 'AutoApply has not checked this step yet.';
     if (step === 'provider') {
+        const provider = setupProviderChoice(status.provider)?.label || 'your AI service';
+        const model = status.model ? ` using ${status.model}` : '';
         return done
-            ? `AutoApply is connected to ${setupProviderChoice(status.provider)?.label || 'your AI service'}.`
+            ? `AutoApply is connected to ${provider}${model}.`
+            : status.model
+                ? `Selected model: ${status.model}. AutoApply needs a working AI service before it can write anything for you.`
             : 'AutoApply needs an AI service before it can write anything for you.';
     }
     if (step === 'resume') return done ? 'Your resume is saved and ready to reuse.' : 'AutoApply needs your resume to fill in your work history.';

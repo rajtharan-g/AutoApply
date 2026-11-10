@@ -202,9 +202,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const base = await AutoApplyUtils.getApiBase();
+        const longAiRequest = ['/api/autofill', '/api/analyze-job', '/api/cover-letter', '/api/cover-letter/docx', '/api/profile/upload-resume'].includes(message.endpoint);
         const options = {
           method: message.method,
-          signal: AbortSignal.timeout(30000)
+          signal: AbortSignal.timeout(longAiRequest ? 180000 : 30000)
         };
         if (message.method !== 'GET') {
           options.headers = { 'Content-Type': 'application/json' };

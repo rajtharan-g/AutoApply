@@ -69,7 +69,7 @@ _PROVIDER_CHOICES = {
     "gemini": {
         "key_label": "Gemini key",
         "key_url": "https://aistudio.google.com/apikey",
-        "models": ["gemini-2.5-flash"],
+        "models": ["gemini-3.8-flash"],
         "note": "Free tier available.",
     },
     "openrouter": {
